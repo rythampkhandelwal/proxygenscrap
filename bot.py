@@ -495,7 +495,8 @@ async def fetch_one(session: aiohttp.ClientSession, url: str, expected_protocol:
         elif Path(url).exists():
             text = Path(url).read_text(encoding="utf-8", errors="ignore")
         else:
-            async with session.get(url, timeout=_make_timeout(30, 5)) as resp:
+            # Increased timeout for slower sources
+            async with session.get(url, timeout=_make_timeout(60, 10)) as resp:
                 text = await resp.text(errors="ignore")
     except Exception:
         return url, []
@@ -915,5 +916,3 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         print("\n⏹️  Bot stopped by user.")
         sys.exit(0)
-
-
