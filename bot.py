@@ -252,6 +252,21 @@ HTTP_SOURCES = [
     "https://www.proxy-list.download/api/v1/get?type=https",
     "https://raw.githubusercontent.com/roosterkid/openproxylist/main/HTTPS_RAW.txt",
     "https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/http.txt",
+    # From JavaScript proxy scraper
+    "https://openproxy.space/list/http",
+    "https://proxyspace.pro/http.txt",
+    "https://rootjazz.com/proxies/proxies.txt",
+    "https://proxyhub.me/en/all-http-proxy-list.html",
+    "https://proxy-tools.com/proxy/http",
+    "https://proxylist.geonode.com/api/proxy-list?limit=500&page=1&sort_by=lastChecked&sort_type=desc&protocols=https",
+    "https://cdn.jsdelivr.net/gh/aslisk/proxyhttps/https.txt",
+    "https://cdn.jsdelivr.net/gh/clarketm/proxy-list/proxy-list-raw.txt",
+    "https://cdn.jsdelivr.net/gh/hendrikbgr/Free-Proxy-Repo/proxy_list.txt",
+    "https://cdn.jsdelivr.net/gh/jetkai/proxy-list/online-proxies/txt/proxies-http.txt",
+    "https://cdn.jsdelivr.net/gh/mmpx12/proxy-list/https.txt",
+    "https://cdn.jsdelivr.net/gh/roosterkid/openproxylist/HTTPS_RAW.txt",
+    "https://cdn.jsdelivr.net/gh/ShiftyTR/Proxy-List/https.txt",
+    "https://cdn.jsdelivr.net/gh/sunny9577/proxy-scraper/proxies.txt",
 ]
 
 HTTPS_SOURCES = [
@@ -298,6 +313,16 @@ SOCKS4_SOURCES = [
     "https://raw.githubusercontent.com/rdavydov/proxy-list/main/proxies/socks4.txt",
     "https://raw.githubusercontent.com/jetkai/proxy-list/main/online-proxies/txt/proxies-socks4.txt",
     "https://www.proxy-list.download/api/v1/get?type=socks4",
+    # From JavaScript proxy scraper
+    "https://openproxy.space/list/socks4",
+    "https://proxyspace.pro/socks4.txt",
+    "https://proxyhub.me/en/all-socks4-proxy-list.html",
+    "https://proxylist.geonode.com/api/proxy-list?limit=500&page=1&sort_by=lastChecked&sort_type=desc&protocols=socks4",
+    "https://www.my-proxy.com/free-socks-4-proxy.html",
+    "https://cdn.jsdelivr.net/gh/B4RC0DE-TM/proxy-list/SOCKS4.txt",
+    "https://cdn.jsdelivr.net/gh/jetkai/proxy-list/online-proxies/txt/proxies-socks4.txt",
+    "https://cdn.jsdelivr.net/gh/roosterkid/openproxylist/SOCKS4_RAW.txt",
+    "https://cdn.jsdelivr.net/gh/TheSpeedX/PROXY-List/socks4.txt",
 ]
 
 SOCKS5_SOURCES = [
@@ -332,6 +357,16 @@ SOCKS5_SOURCES = [
     "https://raw.githubusercontent.com/jetkai/proxy-list/main/online-proxies/txt/proxies-socks5.txt",
     "https://raw.githubusercontent.com/hookzof/socks5_list/master/proxy.txt",
     "https://www.proxy-list.download/api/v1/get?type=socks5",
+    # From JavaScript proxy scraper
+    "https://openproxy.space/list/socks5",
+    "https://proxyspace.pro/socks5.txt",
+    "https://proxy-tools.com/proxy/socks5",
+    "https://proxyhub.me/en/all-sock5-proxy-list.html",
+    "https://proxylist.geonode.com/api/proxy-list?limit=500&page=1&sort_by=lastChecked&sort_type=desc&protocols=socks5",
+    "https://cdn.jsdelivr.net/gh/jetkai/proxy-list/online-proxies/txt/proxies-socks5.txt",
+    "https://cdn.jsdelivr.net/gh/mmpx12/proxy-list/socks5.txt",
+    "https://cdn.jsdelivr.net/gh/roosterkid/openproxylist/SOCKS5_RAW.txt",
+    "https://cdn.jsdelivr.net/gh/TheSpeedX/PROXY-List/socks5.txt",
 ]
 
 
