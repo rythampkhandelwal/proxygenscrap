@@ -5,6 +5,7 @@ Production-grade, fully featured bot with advanced async handling.
 """
 
 import asyncio
+import json
 import os
 import re
 import sys
@@ -46,7 +47,7 @@ DEFAULT_CHECK_USER_AGENT = DEFAULT_SCRAPE_USER_AGENT
 DEFAULT_ALLOW_INSECURE_SSL = True
 
 # Telegram bot
-BOT_TOKEN = os.environ.get("BOT_TOKEN", "8190937825:AAF56JvnqeIie9VWOQXB5H2o6g0Y6YVcUbc")
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "8190937825:AAExpRnZvSqBd_Wd0DsnhJghwpm3tv3hgJ0")
 DEFAULT_PROTOCOLS = ["http", "https", "socks4", "socks5"]
 OUTPUT_BASE = Path("./out")
 SCRAPED_DIR = OUTPUT_BASE / "scraped"
@@ -914,4 +915,3 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         print("\n⏹️  Bot stopped by user.")
         sys.exit(0)
-
