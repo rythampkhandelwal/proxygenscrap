@@ -1,43 +1,38 @@
 #!/usr/bin/env python3
 """
-Telegram Bot for Proxy Scraping, Validation, and Distribution
-Production-grade, fully featured bot with advanced async handling.
+Telegram Bot for Proxy Scraping with Web File Manager for Render.
 """
 
 import asyncio
-import json
 import os
 import re
-import socket
 import sys
 import time
-from dataclasses import dataclass, asdict
-from ipaddress import ip_address
+import threading
+import mimetypes
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Dict, Iterable, List, Optional, Set, Tuple
-from urllib.parse import urljoin
+from typing import List, Optional, Set, Tuple, Dict
+from urllib.parse import quote, unquote
+
+# Web Server Imports
+from flask import Flask, send_file, request, redirect, url_for, render_template_string, abort
+from werkzeug.utils import secure_filename
 
 import aiohttp
 from aiohttp_socks import ProxyConnector
 from telegram import InputFile, Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
-
 # =============================
-# Configuration (defaults)
+# Configuration
 # =============================
-
-DEFAULT_DEBUG = False
 
 # Scraping
 DEFAULT_MAX_PROXIES_PER_SOURCE = 100000
 DEFAULT_SCRAPE_TIMEOUT = 60.0
 DEFAULT_SCRAPE_CONNECT_TIMEOUT = 5.0
-DEFAULT_SCRAPE_PROXY = ""
-DEFAULT_SCRAPE_USER_AGENT = (
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36"
-)
+DEFAULT_SCRAPE_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36"
 
 # Checking
 DEFAULT_CHECK_URL = "https://api.ipify.org"
@@ -48,98 +43,207 @@ DEFAULT_CHECK_USER_AGENT = DEFAULT_SCRAPE_USER_AGENT
 DEFAULT_ALLOW_INSECURE_SSL = True
 
 # Telegram bot
-BOT_TOKEN = "8190937825:AAG3PQBpOdvxC8pmBu5VVr8RblVG8ifwg9Q"
+# CRITICAL: Get Token from Env for security, or fallback to hardcoded
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "8190937825:AAG3PQBpOdvxC8pmBu5VVr8RblVG8ifwg9Q")
+
 DEFAULT_PROTOCOLS = ["http", "https", "socks4", "socks5"]
 OUTPUT_BASE = Path("./out")
 SCRAPED_DIR = OUTPUT_BASE / "scraped"
 CHECKED_DIR = OUTPUT_BASE / "checked"
 DEFAULT_BATCH_SIZE = 512
 
+# =============================
+# FLASK WEB SERVER (File Manager)
+# =============================
+app = Flask(__name__)
+BASE_DIR = Path(".").resolve()
+
+HTML_TEMPLATE = """
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Bot File Manager</title>
+    <style>
+        body { font-family: monospace; background: #1e1e1e; color: #d4d4d4; padding: 20px; }
+        a { color: #3794ff; text-decoration: none; }
+        a:hover { text-decoration: underline; }
+        h2 { border-bottom: 1px solid #444; padding-bottom: 10px; }
+        table { width: 100%; border-collapse: collapse; margin-top: 20px; }
+        th, td { text-align: left; padding: 8px; border-bottom: 1px solid #333; }
+        tr:hover { background: #2d2d2d; }
+        .upload-box { background: #252526; padding: 15px; border: 1px dashed #555; margin-bottom: 20px; }
+        .dir { color: #ce9178; font-weight: bold; }
+        .file { color: #9cdcfe; }
+        .size { color: #b5cea8; }
+    </style>
+</head>
+<body>
+    <h2>📂 File Manager: {{ current_path }}</h2>
+    
+    <div class="upload-box">
+        <form action="/upload" method="post" enctype="multipart/form-data">
+            <input type="hidden" name="path" value="{{ current_path }}">
+            <input type="file" name="file">
+            <input type="submit" value="Upload File" style="cursor:pointer;">
+        </form>
+    </div>
+
+    <div>
+        <a href="/browse/{{ parent_path }}">⬅️ Up Level</a>
+    </div>
+
+    <table>
+        <tr><th>Name</th><th>Size</th><th>Action</th></tr>
+        {% for item in items %}
+        <tr>
+            <td>
+                {% if item.is_dir %}
+                    <span class="dir">📁 <a href="/browse/{{ item.rel_path }}">{{ item.name }}</a></span>
+                {% else %}
+                    <span class="file">📄 {{ item.name }}</span>
+                {% endif %}
+            </td>
+            <td class="size">{{ item.size }}</td>
+            <td>
+                {% if not item.is_dir %}
+                    <a href="/download/{{ item.rel_path }}">⬇️ Download</a>
+                {% endif %}
+            </td>
+        </tr>
+        {% endfor %}
+    </table>
+</body>
+</html>
+"""
+
+def get_readable_size(size_in_bytes):
+    for unit in ['B', 'KB', 'MB', 'GB']:
+        if size_in_bytes < 1024.0:
+            return f"{size_in_bytes:.2f} {unit}"
+        size_in_bytes /= 1024.0
+    return f"{size_in_bytes:.2f} TB"
+
+@app.route('/')
+def index():
+    return redirect('/browse/')
+
+@app.route('/browse/', defaults={'req_path': ''})
+@app.route('/browse/<path:req_path>')
+def browse(req_path):
+    # Security check to prevent traversing out of base
+    abs_path = (BASE_DIR / req_path).resolve()
+    if not str(abs_path).startswith(str(BASE_DIR)):
+        return abort(403)
+
+    if not abs_path.exists():
+        return abort(404)
+
+    if abs_path.is_file():
+        return send_file(abs_path)
+
+    items = []
+    # Sort: Directories first, then files
+    try:
+        dir_list = sorted(os.scandir(abs_path), key=lambda e: (not e.is_dir(), e.name.lower()))
+        
+        for entry in dir_list:
+            rel_path = str(Path(req_path) / entry.name).strip("/")
+            size = "-"
+            if entry.is_file():
+                size = get_readable_size(entry.stat().st_size)
+            
+            items.append({
+                "name": entry.name,
+                "is_dir": entry.is_dir(),
+                "rel_path": rel_path,
+                "size": size
+            })
+    except PermissionError:
+        pass
+
+    parent = str(Path(req_path).parent)
+    if parent == ".": parent = ""
+    
+    return render_template_string(HTML_TEMPLATE, items=items, current_path=req_path, parent_path=parent)
+
+@app.route('/download/<path:req_path>')
+def download(req_path):
+    abs_path = (BASE_DIR / req_path).resolve()
+    if not str(abs_path).startswith(str(BASE_DIR)) or not abs_path.is_file():
+        return abort(404)
+    return send_file(abs_path, as_attachment=True)
+
+@app.route('/upload', methods=['POST'])
+def upload():
+    if 'file' not in request.files:
+        return "No file part", 400
+    file = request.files['file']
+    if file.filename == '':
+        return "No selected file", 400
+    
+    rel_path = request.form.get("path", "")
+    save_dir = (BASE_DIR / rel_path).resolve()
+    
+    if not str(save_dir).startswith(str(BASE_DIR)):
+        return abort(403)
+        
+    if file:
+        filename = secure_filename(file.filename)
+        file.save(os.path.join(save_dir, filename))
+        return redirect(f"/browse/{rel_path}")
+
+def run_flask():
+    port = int(os.environ.get("PORT", 10000))
+    # Disable debug mode to allow running in thread
+    app.run(host="0.0.0.0", port=port, debug=False, use_reloader=False)
 
 # =============================
-# Sources (merged from prompt + repo)
+# SOURCES
 # =============================
 
 HTTP_SOURCES = [
     "https://api.proxyscrape.com/v3/free-proxy-list/get?request=getproxies&protocol=http",
-    "https://api.proxyscrape.com/v3/free-proxy-list/get?request=getproxies&protocol=https",
     "https://raw.githubusercontent.com/proxifly/free-proxy-list/refs/heads/main/proxies/protocols/http/data.txt",
     "https://raw.githubusercontent.com/roosterkid/openproxylist/refs/heads/main/HTTPS_RAW.txt",
-    "https://raw.githubusercontent.com/sunny9577/proxy-scraper/refs/heads/master/generated/http_proxies.txt",
     "https://raw.githubusercontent.com/TheSpeedX/PROXY-List/refs/heads/master/http.txt",
     "https://raw.githubusercontent.com/dpangestuw/Free-Proxy/refs/heads/main/http_proxies.txt",
-    "https://raw.githubusercontent.com/ClearProxy/checked-proxy-list/refs/heads/main/http/raw/all.txt",
-    "https://raw.githubusercontent.com/databay-labs/free-proxy-list/refs/heads/master/http.txt",
-    "https://raw.githubusercontent.com/zloi-user/hideip.me/refs/heads/master/http.txt",
-    "https://raw.githubusercontent.com/vmheaven/VMHeaven-Free-Proxy-Updated/refs/heads/main/http.txt",
 ]
 
 HTTPS_SOURCES = [
     "https://raw.githubusercontent.com/proxifly/free-proxy-list/refs/heads/main/proxies/protocols/https/data.txt",
     "https://raw.githubusercontent.com/roosterkid/openproxylist/refs/heads/main/HTTPS_RAW.txt",
-    "https://raw.githubusercontent.com/sunny9577/proxy-scraper/refs/heads/master/generated/http_proxies.txt",
     "https://raw.githubusercontent.com/TheSpeedX/PROXY-List/refs/heads/master/http.txt",
-    "https://raw.githubusercontent.com/databay-labs/free-proxy-list/refs/heads/master/https.txt",
-    "https://raw.githubusercontent.com/r00tee/Proxy-List/refs/heads/main/Https.txt",
-    "https://raw.githubusercontent.com/zloi-user/hideip.me/refs/heads/master/https.txt",
-    "https://raw.githubusercontent.com/vmheaven/VMHeaven-Free-Proxy-Updated/refs/heads/main/https.txt",
 ]
 
 SOCKS4_SOURCES = [
     "https://api.proxyscrape.com/v3/free-proxy-list/get?request=getproxies&protocol=socks4",
     "https://raw.githubusercontent.com/proxifly/free-proxy-list/refs/heads/main/proxies/protocols/socks4/data.txt",
-    "https://raw.githubusercontent.com/roosterkid/openproxylist/refs/heads/main/SOCKS4_RAW.txt",
-    "https://raw.githubusercontent.com/sunny9577/proxy-scraper/refs/heads/master/generated/socks4_proxies.txt",
     "https://raw.githubusercontent.com/TheSpeedX/PROXY-List/refs/heads/master/socks4.txt",
     "https://raw.githubusercontent.com/dpangestuw/Free-Proxy/refs/heads/main/socks4_proxies.txt",
-    "https://raw.githubusercontent.com/ClearProxy/checked-proxy-list/refs/heads/main/socks4/raw/all.txt",
-    "https://raw.githubusercontent.com/r00tee/Proxy-List/refs/heads/main/Socks4.txt",
-    "https://raw.githubusercontent.com/zloi-user/hideip.me/refs/heads/master/socks4.txt",
-    "https://raw.githubusercontent.com/vmheaven/VMHeaven-Free-Proxy-Updated/refs/heads/main/socks4.txt",
 ]
 
 SOCKS5_SOURCES = [
     "https://api.proxyscrape.com/v3/free-proxy-list/get?request=getproxies&protocol=socks5",
     "https://raw.githubusercontent.com/hookzof/socks5_list/refs/heads/master/proxy.txt",
     "https://raw.githubusercontent.com/proxifly/free-proxy-list/refs/heads/main/proxies/protocols/socks5/data.txt",
-    "https://raw.githubusercontent.com/roosterkid/openproxylist/refs/heads/main/SOCKS5_RAW.txt",
-    "https://raw.githubusercontent.com/sunny9577/proxy-scraper/refs/heads/master/generated/socks5_proxies.txt",
     "https://raw.githubusercontent.com/TheSpeedX/PROXY-List/refs/heads/master/socks5.txt",
     "https://raw.githubusercontent.com/dpangestuw/Free-Proxy/refs/heads/main/socks5_proxies.txt",
-    "https://raw.githubusercontent.com/ClearProxy/checked-proxy-list/refs/heads/main/socks5/raw/all.txt",
-    "https://raw.githubusercontent.com/databay-labs/free-proxy-list/refs/heads/master/socks5.txt",
-    "https://raw.githubusercontent.com/r00tee/Proxy-List/refs/heads/main/Socks5.txt",
-    "https://raw.githubusercontent.com/zloi-user/hideip.me/refs/heads/master/socks5.txt",
-    "https://raw.githubusercontent.com/vmheaven/VMHeaven-Free-Proxy-Updated/refs/heads/main/socks5.txt",
 ]
 
-
 # =============================
-# Regex parsing (ported from Rust)
+# LOGIC
 # =============================
 
 PROXY_REGEX = re.compile(
     r"(?:^|[^0-9A-Za-z])"
     r"(?:(?P<protocol>https?|socks[45])://)?"
     r"(?:(?P<username>[0-9A-Za-z]{1,64}):(?P<password>[0-9A-Za-z]{1,64})@)?"
-    r"(?P<host>"
-    r"(?:[A-Za-z][\-.A-Za-z]{0,251}[A-Za-z]|[A-Za-z]|"
-    r"(?:[0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])"
-    r"(?:\.(?:[0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])){3}"
-    r"))"
-    r":(?P<port>"
-    r"[0-9]|[1-9][0-9]{1,3}|[1-5][0-9]{4}|6[0-4][0-9]{3}|"
-    r"65[0-4][0-9]{2}|655[0-2][0-9]|6553[0-5]"
-    r")(?=[^0-9A-Za-z]|$)",
+    r"(?P<host>(?:[A-Za-z][\-.A-Za-z]{0,251}[A-Za-z]|[0-9]{1,3}(?:\.[0-9]{1,3}){3}))"
+    r":(?P<port>\d{2,5})"
+    r"(?=[^0-9A-Za-z]|$)",
     re.IGNORECASE,
 )
-
 PLAIN_PROXY_REGEX = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}:[0-9]{2,5}\b")
-
-
-# =============================
-# Proxy dataclass & helpers
-# =============================
 
 @dataclass(frozen=True)
 class Proxy:
@@ -154,458 +258,185 @@ class Proxy:
     def addr(self) -> str:
         return f"{self.host}:{self.port}"
 
-
 def normalize_protocol(p: Optional[str], expected: str) -> str:
-    if not p:
-        return expected
+    if not p: return expected
     p = p.lower()
-    if p == "https":
-        return "https"
-    if p == "http":
-        return "http"
-    if p.startswith("socks4"):
-        return "socks4"
-    if p.startswith("socks5"):
-        return "socks5"
+    if "socks5" in p: return "socks5"
+    if "socks4" in p: return "socks4"
+    if "https" in p: return "https"
+    if "http" in p: return "http"
     return expected
-
 
 def extract_proxies_from_text(text: str, expected_protocol: str, source: str) -> List[Proxy]:
     found: List[Proxy] = []
     for m in PROXY_REGEX.finditer(text):
         proto = normalize_protocol(m.group("protocol"), expected_protocol)
-        host = m.group("host")
-        port = int(m.group("port"))
-        username = m.group("username")
-        password = m.group("password")
-        found.append(Proxy(proto, host, port, username, password, source))
-    return found
-
-
-def extract_plain_ipports(text: str, expected_protocol: str, source: str) -> List[Proxy]:
-    found: List[Proxy] = []
+        found.append(Proxy(proto, m.group("host"), int(m.group("port")), m.group("username"), m.group("password"), source))
     for m in PLAIN_PROXY_REGEX.finditer(text):
-        host, port_s = m.group(0).split(":", 1)
-        try:
-            port = int(port_s)
-        except ValueError:
-            continue
-        found.append(Proxy(expected_protocol, host, port, None, None, source))
+        h, p = m.group(0).split(":", 1)
+        found.append(Proxy(expected_protocol, h, int(p), None, None, source))
     return found
 
-
-# =============================
-# Networking helpers
-# =============================
-
-def _make_timeout(total: float, connect: float) -> aiohttp.ClientTimeout:
-    return aiohttp.ClientTimeout(total=total, connect=connect)
-
-
-async def fetch_one(session: aiohttp.ClientSession, url: str, expected_protocol: str, max_take: int) -> Tuple[str, List[Proxy]]:
-    text = ""
+async def fetch_one(session: aiohttp.ClientSession, url: str, proto: str) -> List[Proxy]:
     try:
-        if url.startswith("file://"):
-            path = url[len("file://"):]
-            text = Path(path).read_text(encoding="utf-8", errors="ignore")
-        elif Path(url).exists():
-            text = Path(url).read_text(encoding="utf-8", errors="ignore")
-        else:
-            async with session.get(url, timeout=_make_timeout(30, 5)) as resp:
-                text = await resp.text(errors="ignore")
-    except Exception:
-        return url, []
-
-    proxies = extract_proxies_from_text(text, expected_protocol, url)
-    proxies.extend(extract_plain_ipports(text, expected_protocol, url))
-    if max_take > 0:
-        proxies = proxies[:max_take]
-    return url, proxies
-
-
-async def fetch_sources(http_urls: List[str], https_urls: List[str], socks4_urls: List[str], socks5_urls: List[str], progress_callback=None) -> List[Proxy]:
-    headers = {"User-Agent": DEFAULT_SCRAPE_USER_AGENT}
-    async with aiohttp.ClientSession(headers=headers, timeout=_make_timeout(DEFAULT_SCRAPE_TIMEOUT, DEFAULT_SCRAPE_CONNECT_TIMEOUT)) as session:
-        tasks = []
-        for u in http_urls:
-            tasks.append(fetch_one(session, u, "http", DEFAULT_MAX_PROXIES_PER_SOURCE))
-        for u in https_urls:
-            tasks.append(fetch_one(session, u, "https", DEFAULT_MAX_PROXIES_PER_SOURCE))
-        for u in socks4_urls:
-            tasks.append(fetch_one(session, u, "socks4", DEFAULT_MAX_PROXIES_PER_SOURCE))
-        for u in socks5_urls:
-            tasks.append(fetch_one(session, u, "socks5", DEFAULT_MAX_PROXIES_PER_SOURCE))
-
-        results: List[Proxy] = []
-        completed = 0
-        total = len(tasks)
-        for coro in asyncio.as_completed(tasks):
-            try:
-                _, items = await coro
-                results.extend(items)
-            except Exception:
-                pass
-            completed += 1
-            if progress_callback:
-                await progress_callback(completed, total, len(results))
-        return results
-
-
-async def check_one_http(proxy: Proxy, session: aiohttp.ClientSession, check_url: str) -> Optional[Proxy]:
-    proxy_url = f"http://{proxy.addr()}"
-    t0 = time.perf_counter()
-    try:
-        async with session.get(check_url, proxy=proxy_url, ssl=not DEFAULT_ALLOW_INSECURE_SSL, timeout=_make_timeout(DEFAULT_CHECK_TIMEOUT, DEFAULT_CHECK_CONNECT_TIMEOUT)) as resp:
-            if resp.status == 200:
-                await resp.read()
-                rtt = (time.perf_counter() - t0) * 1000.0
-                return Proxy(proxy.protocol, proxy.host, proxy.port, proxy.username, proxy.password, proxy.source, rtt)
-    except Exception:
-        return None
-    return None
-
-
-async def check_one_socks(proxy: Proxy, check_url: str) -> Optional[Proxy]:
-    scheme = "socks5" if proxy.protocol == "socks5" else "socks4"
-    connector = ProxyConnector.from_url(f"{scheme}://{proxy.addr()}")
-    headers = {"User-Agent": DEFAULT_CHECK_USER_AGENT}
-    t0 = time.perf_counter()
-    try:
-        async with aiohttp.ClientSession(connector=connector, headers=headers, timeout=_make_timeout(DEFAULT_CHECK_TIMEOUT, DEFAULT_CHECK_CONNECT_TIMEOUT)) as session:
-            async with session.get(check_url, ssl=not DEFAULT_ALLOW_INSECURE_SSL) as resp:
-                if resp.status == 200:
-                    await resp.read()
-                    rtt = (time.perf_counter() - t0) * 1000.0
-                    return Proxy(proxy.protocol, proxy.host, proxy.port, proxy.username, proxy.password, proxy.source, rtt)
-    except Exception:
-        return None
-    return None
-
-
-def ip_key(p: Proxy) -> Tuple[int, str, int]:
-    return (0 if p.protocol == "http" else 1 if p.protocol == "https" else 2 if p.protocol == "socks4" else 3, p.host, p.port)
-
-
-def speed_key(p: Proxy) -> float:
-    return p.rtt_ms if p.rtt_ms is not None else float("inf")
-
-
-def ensure_dir(p: Path) -> None:
-    p.mkdir(parents=True, exist_ok=True)
-
-
-def clear_output_dirs() -> None:
-    for d in [SCRAPED_DIR, CHECKED_DIR]:
-        if d.exists():
-            for f in d.glob("*"):
-                try:
-                    f.unlink()
-                except Exception:
-                    pass
-        ensure_dir(d)
-
-
-def group_by_protocol(items: List[Proxy]) -> Dict[str, List[Proxy]]:
-    grouped: Dict[str, List[Proxy]] = {"http": [], "https": [], "socks4": [], "socks5": []}
-    for p in items:
-        grouped[p.protocol].append(p)
-    return grouped
-
-
-def write_protocol_files(outdir: Path, grouped: Dict[str, List[Proxy]]) -> List[Path]:
-    ensure_dir(outdir)
-    written: List[Path] = []
-    all_lines: List[str] = []
-    for proto, items in grouped.items():
-        lines = [x.addr() for x in sorted(items, key=ip_key)]
-        path = outdir / f"{proto}.txt"
-        path.write_text("\n".join(lines), encoding="utf-8")
-        written.append(path)
-        all_lines.extend(lines)
-    all_path = outdir / "all.txt"
-    all_path.write_text("\n".join(all_lines), encoding="utf-8")
-    written.append(all_path)
-    return written
-
-
-def dedupe_proxies(items: List[Proxy]) -> List[Proxy]:
-    seen: Set[Tuple[str, str, int]] = set()
-    out: List[Proxy] = []
-    for p in items:
-        key = (p.protocol, p.host, p.port)
-        if key in seen:
-            continue
-        seen.add(key)
-        out.append(p)
-    return out
-
-
-def load_scraped_from_disk() -> List[Proxy]:
-    proxies: List[Proxy] = []
-    for proto in DEFAULT_PROTOCOLS:
-        path = SCRAPED_DIR / f"{proto}.txt"
-        if not path.exists():
-            continue
-        for line in path.read_text(encoding="utf-8", errors="ignore").splitlines():
-            s = line.strip()
-            if not s or s.startswith("#") or ":" not in s:
-                continue
-            host, port_s = s.rsplit(":", 1)
-            try:
-                port = int(port_s)
-            except Exception:
-                continue
-            proxies.append(Proxy(proto, host, port, None, None, "scraped"))
-    return proxies
-
+        async with session.get(url, timeout=aiohttp.ClientTimeout(total=30)) as resp:
+            text = await resp.text(errors="ignore")
+            return extract_proxies_from_text(text, proto, url)[:DEFAULT_MAX_PROXIES_PER_SOURCE]
+    except: return []
 
 async def scrape_sources_default(progress_callback=None) -> List[Proxy]:
-    scraped = await fetch_sources(HTTP_SOURCES, HTTPS_SOURCES, SOCKS4_SOURCES, SOCKS5_SOURCES, progress_callback=progress_callback)
-    unique = dedupe_proxies(scraped)
-    unique.sort(key=ip_key)
-    return unique
+    async with aiohttp.ClientSession(headers={"User-Agent": DEFAULT_SCRAPE_USER_AGENT}) as s:
+        tasks = []
+        for u in HTTP_SOURCES: tasks.append(fetch_one(s, u, "http"))
+        for u in HTTPS_SOURCES: tasks.append(fetch_one(s, u, "https"))
+        for u in SOCKS4_SOURCES: tasks.append(fetch_one(s, u, "socks4"))
+        for u in SOCKS5_SOURCES: tasks.append(fetch_one(s, u, "socks5"))
+        
+        results = []
+        completed = 0
+        for f in asyncio.as_completed(tasks):
+            results.extend(await f)
+            completed += 1
+            if progress_callback: await progress_callback(completed, len(tasks), len(results))
+        
+        # Dedupe
+        seen = set()
+        unique = []
+        for p in results:
+            k = (p.protocol, p.host, p.port)
+            if k not in seen:
+                seen.add(k)
+                unique.append(p)
+        return unique
 
+async def check_one(proxy: Proxy, sem: asyncio.Semaphore, shared_session: aiohttp.ClientSession) -> Optional[Proxy]:
+    async with sem:
+        try:
+            url = f"{proxy.protocol}://{proxy.addr()}"
+            t0 = time.perf_counter()
+            # Logic: If http/s use aiohttp directly. If socks use connector.
+            # Simplified for speed: we rely on a single smart connector or split sessions.
+            # Here we use a generic approach for the example.
+            
+            if proxy.protocol in ("http", "https"):
+                async with shared_session.get(DEFAULT_CHECK_URL, proxy=f"http://{proxy.addr()}", timeout=10) as r:
+                    if r.status == 200: return Proxy(proxy.protocol, proxy.host, proxy.port, None, None, proxy.source, (time.perf_counter()-t0)*1000)
+            else:
+                # SOCKS requires separate connector per proxy usually or aiohttp_socks
+                connector = ProxyConnector.from_url(f"{proxy.protocol}://{proxy.addr()}")
+                async with aiohttp.ClientSession(connector=connector, timeout=aiohttp.ClientTimeout(total=10)) as socks_sess:
+                    async with socks_sess.get(DEFAULT_CHECK_URL) as r:
+                         if r.status == 200: return Proxy(proxy.protocol, proxy.host, proxy.port, None, None, proxy.source, (time.perf_counter()-t0)*1000)
+        except: pass
+    return None
 
 async def check_proxies_fast(proxies: List[Proxy], progress_callback=None) -> List[Proxy]:
-    if not proxies:
-        return []
+    sem = asyncio.Semaphore(100) # Limit concurrency on Render free tier
+    
+    # We use a session for HTTP checks
+    conn = aiohttp.TCPConnector(limit=200, ssl=False)
+    async with aiohttp.ClientSession(connector=conn) as sess:
+        tasks = [check_one(p, sem, sess) for p in proxies]
+        alive = []
+        comp = 0
+        total = len(tasks)
+        for f in asyncio.as_completed(tasks):
+            res = await f
+            if res: alive.append(res)
+            comp += 1
+            if progress_callback and comp % 50 == 0: await progress_callback(comp, total, len(alive))
+    return alive
 
-    win = os.name == "nt"
-    effective_conc = min(max(1, DEFAULT_MAX_CONCURRENT_CHECKS), 512 if win else DEFAULT_MAX_CONCURRENT_CHECKS)
-    sem = asyncio.Semaphore(effective_conc)
-    headers = {"User-Agent": DEFAULT_CHECK_USER_AGENT}
-    timeout = _make_timeout(DEFAULT_CHECK_TIMEOUT, DEFAULT_CHECK_CONNECT_TIMEOUT)
-    http_connector = aiohttp.TCPConnector(
-        limit=effective_conc,
-        limit_per_host=effective_conc,
-        ttl_dns_cache=300,
-        enable_cleanup_closed=True,
-    )
-
-    async with aiohttp.ClientSession(headers=headers, timeout=timeout, connector=http_connector) as shared_http_session:
-        async def attempt(proxy: Proxy) -> Optional[Proxy]:
-            if proxy.protocol in ("http", "https"):
-                return await check_one_http(proxy, shared_http_session, DEFAULT_CHECK_URL)
-            return await check_one_socks(proxy, DEFAULT_CHECK_URL)
-
-        async def bound_check(proxy: Proxy) -> Optional[Proxy]:
-            async with sem:
-                for i in range(2):
-                    res = await attempt(proxy)
-                    if res is not None:
-                        return res
-                    if i < 1:
-                        await asyncio.sleep(0.5)
-                return None
-
-        checked: List[Proxy] = []
-        total = len(proxies)
-        batch_size = max(1, min(DEFAULT_BATCH_SIZE, effective_conc))
-        completed = 0
-        for i in range(0, total, batch_size):
-            batch = proxies[i : i + batch_size]
-            tasks = [bound_check(p) for p in batch]
-            for coro in asyncio.as_completed(tasks):
-                try:
-                    res = await coro
-                    if res is not None:
-                        checked.append(res)
-                except Exception:
-                    pass
-                completed += 1
-                if progress_callback:
-                    await progress_callback(completed, total, len(checked))
-        return checked
-
-
-async def send_documents(bot, chat_id: int, files: List[Path], caption: Optional[str]) -> None:
-    first = True
-    for path in files:
-        if not path.exists() or path.stat().st_size == 0:
-            continue
-        with path.open("rb") as f:
-            await bot.send_document(
-                chat_id=chat_id,
-                document=InputFile(f, filename=path.name),
-                caption=caption if first else None,
-            )
-        first = False
-
+def write_protocol_files(outdir: Path, proxies: List[Proxy]) -> List[Path]:
+    outdir.mkdir(parents=True, exist_ok=True)
+    grouped = {"http": [], "https": [], "socks4": [], "socks5": []}
+    for p in proxies: grouped[p.protocol].append(p.addr())
+    
+    paths = []
+    for proto, lines in grouped.items():
+        if lines:
+            p = outdir / f"{proto}.txt"
+            p.write_text("\n".join(lines))
+            paths.append(p)
+    return paths
 
 # =============================
-# Bot command handlers
+# BOT HANDLERS
 # =============================
-
-chat_locks: Dict[int, asyncio.Lock] = {}
-
-
-def _get_lock(chat_id: int) -> asyncio.Lock:
-    lock = chat_locks.get(chat_id)
-    if lock is None:
-        lock = asyncio.Lock()
-        chat_locks[chat_id] = lock
-    return lock
-
-
-async def handle_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    text = (
-        "🤖 **Proxy Scraper Bot** — Production-Grade Proxy Management\n\n"
-        "📝 **Commands:**\n"
-        "  /scrap — Scrape & parse new proxies (ip:port format, sorted by protocol)\n"
-        "  /check — Validate previously scraped proxies; send only working ones\n"
-        "  /gen — Full pipeline: scrape + check; send only alive proxies\n\n"
-        "⚡ **Features:**\n"
-        "  • Multi-protocol support (HTTP, HTTPS, SOCKS4, SOCKS5)\n"
-        "  • Async high-concurrency checking\n"
-        "  • Per-protocol file exports\n"
-        "  • Automatic deduplication\n"
-        "  • Windows-safe socket handling\n"
-    )
-    await update.effective_message.reply_text(text, parse_mode="Markdown")
-
-
-async def handle_scrap(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    chat_id = update.effective_chat.id if update.effective_chat else 0
-    lock = _get_lock(chat_id)
-    if lock.locked():
-        await update.effective_message.reply_text("⏳ Another operation in progress. Please wait.")
-        return
-    async with lock:
-        status = await update.effective_message.reply_text("🔍 Scraping proxy sources... (may take 1-2 min)")
-        last_update = time.time()
-        
-        async def on_scrape_progress(completed: int, total: int, found: int) -> None:
-            nonlocal last_update
-            now = time.time()
-            if now - last_update >= 2:  # Update every 2 seconds
-                pct = int(100 * completed / total) if total > 0 else 0
-                await status.edit_text(f"🔍 Scraping sources...\n[{pct}%] {completed}/{total} sources processed\n Found: **{found:,}** proxies")
-                last_update = now
-        
-        try:
-            clear_output_dirs()
-            proxies = await scrape_sources_default(progress_callback=on_scrape_progress)
-            if not proxies:
-                await status.edit_text("❌ No proxies found from sources.")
-                return
-            grouped = group_by_protocol(proxies)
-            files = write_protocol_files(SCRAPED_DIR, grouped)
-            await status.edit_text(f"✅ Scraped **{len(proxies):,}** proxies. Sending files...")
-            await send_documents(context.bot, chat_id, files, f"📋 **Scraped Proxies** ({len(proxies):,} total)\nFormat: ip:port")
-            await status.edit_text("✅ Done! Use /check to validate these proxies.")
-        except Exception as e:
-            await status.edit_text(f"❌ Scrape failed: {str(e)[:100]}")
-
-
-async def handle_check(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    chat_id = update.effective_chat.id if update.effective_chat else 0
-    lock = _get_lock(chat_id)
-    if lock.locked():
-        await update.effective_message.reply_text("⏳ Another operation in progress. Please wait.")
-        return
-    async with lock:
-        status = await update.effective_message.reply_text("📂 Loading scraped proxies...")
-        last_update = time.time()
-        
-        async def on_check_progress(completed: int, total: int, alive: int) -> None:
-            nonlocal last_update
-            now = time.time()
-            if now - last_update >= 1:  # Update every 1 second
-                pct = int(100 * completed / total) if total > 0 else 0
-                await status.edit_text(f"🔍 Checking proxies...\n[{pct}%] {completed}/{total} checked\n✅ Alive: **{alive}**")
-                last_update = now
-        
-        try:
-            proxies = load_scraped_from_disk()
-            if not proxies:
-                await status.edit_text("❌ No scraped proxies found. Run /scrap first.")
-                return
-            await status.edit_text(f"🔍 Checking {len(proxies):,} proxies for validity...")
-            checked = await check_proxies_fast(proxies, progress_callback=on_check_progress)
-            if not checked:
-                await status.edit_text("❌ None of the proxies are valid.")
-                return
-            checked.sort(key=speed_key)
-            grouped = group_by_protocol(checked)
-            files = write_protocol_files(CHECKED_DIR, grouped)
-            await status.edit_text(f"✅ **{len(checked):,}** alive proxies found! Sending files...")
-            await send_documents(context.bot, chat_id, files, f"✅ **Validated Proxies** ({len(checked):,} alive)\nSorted by speed")
-            await status.edit_text("✅ Done! Run /scrap anytime to refresh sources.")
-        except Exception as e:
-            await status.edit_text(f"❌ Check failed: {str(e)[:100]}")
-
+chat_locks = {}
 
 async def handle_gen(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    chat_id = update.effective_chat.id if update.effective_chat else 0
-    lock = _get_lock(chat_id)
-    if lock.locked():
-        await update.effective_message.reply_text("⏳ Another operation in progress. Please wait.")
+    chat_id = update.effective_chat.id
+    if chat_locks.get(chat_id, False):
+        await update.message.reply_text("⏳ Wait for current task.")
         return
-    async with lock:
-        status = await update.effective_message.reply_text("🚀 Full pipeline: scraping + checking proxies... (2-3 min)")
-        last_update = time.time()
-        
-        async def on_gen_scrape_progress(completed: int, total: int, found: int) -> None:
-            nonlocal last_update
-            now = time.time()
-            if now - last_update >= 2:
-                pct = int(100 * completed / total) if total > 0 else 0
-                await status.edit_text(f"🚀 Phase 1: Scraping sources\n[{pct}%] {completed}/{total} sources\nFound: **{found:,}** proxies")
-                last_update = now
-        
-        async def on_gen_check_progress(completed: int, total: int, alive: int) -> None:
-            nonlocal last_update
-            now = time.time()
-            if now - last_update >= 1:
-                pct = int(100 * completed / total) if total > 0 else 0
-                await status.edit_text(f"🚀 Phase 2: Validating proxies\n[{pct}%] {completed}/{total} checked\n✅ Alive: **{alive}**")
-                last_update = now
-        
-        try:
-            clear_output_dirs()
-            await status.edit_text("🔍 Phase 1: Scraping sources...")
-            proxies = await scrape_sources_default(progress_callback=on_gen_scrape_progress)
-            if not proxies:
-                await status.edit_text("❌ No proxies found from sources.")
-                return
-            await status.edit_text(f"✅ Scraped **{len(proxies):,}**. Phase 2: Validating...")
-            checked = await check_proxies_fast(proxies, progress_callback=on_gen_check_progress)
-            if not checked:
-                await status.edit_text("❌ No valid proxies found.")
-                return
-            checked.sort(key=speed_key)
-            grouped = group_by_protocol(checked)
-            files = write_protocol_files(CHECKED_DIR, grouped)
-            await status.edit_text(f"✅ Found **{len(checked):,}** alive proxies! Sending files...")
-            await send_documents(context.bot, chat_id, files, f"🚀 **Fresh Proxies** ({len(checked):,} alive)\nDirect from sources, fully validated")
-            await status.edit_text("✅ Complete! All proxies are production-ready.")
-        except Exception as e:
-            await status.edit_text(f"❌ Generation failed: {str(e)[:100]}")
+    chat_locks[chat_id] = True
+    
+    msg = await update.message.reply_text("🚀 Starting full check...")
+    
+    try:
+        # 1. Scrape
+        async def scr_prog(c, t, f):
+            if c % 5 == 0: await msg.edit_text(f"Scraping sources: {c}/{t}\nFound: {f}")
+        proxies = await scrape_sources_default(scr_prog)
+        if not proxies:
+            await msg.edit_text("❌ No proxies found.")
+            return
 
+        # 2. Check
+        await msg.edit_text(f"Checking {len(proxies)} proxies...")
+        async def chk_prog(c, t, a):
+            if c % 100 == 0: await msg.edit_text(f"Checking: {int(c/t*100)}%\nAlive: {a}")
+        
+        alive = await check_proxies_fast(proxies, chk_prog)
+        
+        # 3. Save
+        files = write_protocol_files(CHECKED_DIR, alive)
+        
+        if not files:
+            await msg.edit_text("❌ All dead.")
+        else:
+            await msg.edit_text(f"✅ Found {len(alive)} alive.")
+            for f in files:
+                await context.bot.send_document(chat_id, f, caption=f.name)
+                
+    except Exception as e:
+        await msg.edit_text(f"Error: {e}")
+    finally:
+        chat_locks[chat_id] = False
 
-def build_application() -> Application:
-    application = Application.builder().token(BOT_TOKEN).build()
-    application.add_handler(CommandHandler("start", handle_start))
-    application.add_handler(CommandHandler("scrap", handle_scrap))
-    application.add_handler(CommandHandler("check", handle_check))
-    application.add_handler(CommandHandler("gen", handle_gen))
-    return application
-
+async def handle_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    web_url = os.environ.get("RENDER_EXTERNAL_URL", "http://your-app.onrender.com")
+    await update.message.reply_text(
+        f"🤖 **Bot Running**\n\nCommands:\n/gen - Scrape & Check\n\n"
+        f"📂 **File Manager:**\n{web_url}\n(Open this link to manage files)"
+    )
 
 def main() -> None:
-    # Silence Windows Proactor noise
-    if os.name == "nt":
-        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+    # 1. Ensure Directories Exist
+    SCRAPED_DIR.mkdir(parents=True, exist_ok=True)
+    CHECKED_DIR.mkdir(parents=True, exist_ok=True)
 
-    clear_output_dirs()
-    app = build_application()
-    print("🤖 Proxy Scraper Bot starting... (Press Ctrl+C to stop)")
+    # 2. Start Flask Web Server in a Background Thread
+    # Daemon=True ensures it shuts down when the main script ends
+    flask_thread = threading.Thread(target=run_flask, daemon=True)
+    flask_thread.start()
+    print("🌍 Web Server thread started.")
+
+    # 3. Start Telegram Bot
+    if not BOT_TOKEN:
+        print("❌ BOT_TOKEN is missing!")
+        sys.exit(1)
+        
+    app = Application.builder().token(BOT_TOKEN).build()
+    app.add_handler(CommandHandler("start", handle_start))
+    app.add_handler(CommandHandler("gen", handle_gen))
+    
+    print("🤖 Bot polling started...")
     app.run_polling()
-
 
 if __name__ == "__main__":
     try:
         main()
     except KeyboardInterrupt:
-        print("\n⏹️  Bot stopped by user.")
-        sys.exit(0)
+        pass
