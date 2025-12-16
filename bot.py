@@ -38,7 +38,7 @@ DEFAULT_SCRAPE_USER_AGENT = (
 )
 
 # Checking
-DEFAULT_CHECK_URL = "https://api.ipify.org"
+DEFAULT_CHECK_URL = "https://api.ipify.org?format=json"
 DEFAULT_MAX_CONCURRENT_CHECKS = 1024
 DEFAULT_CHECK_TIMEOUT = 60.0
 DEFAULT_CHECK_CONNECT_TIMEOUT = 5.0
@@ -198,15 +198,60 @@ def run_web_server():
 
 HTTP_SOURCES = [
     "https://api.proxyscrape.com/v3/free-proxy-list/get?request=getproxies&protocol=http",
+    "https://api.proxyscrape.com/v3/free-proxy-list/get?request=getproxies&protocol=https",
+    "https://api.proxyscrape.com/v2/?request=getproxies&protocol=http&timeout=10000&country=all",
+    "https://api.proxyscrape.com/v2/?request=getproxies&protocol=http&timeout=10000&country=all&ssl=all&anonymity=all",
+    "https://api.proxyscrape.com/v4/free-proxy-list/get?request=displayproxies&timeout=8000&country=all&ssl=all&anonymity=all",
     "https://raw.githubusercontent.com/proxifly/free-proxy-list/refs/heads/main/proxies/protocols/http/data.txt",
+    "https://raw.githubusercontent.com/proxifly/free-proxy-list/refs/heads/main/proxies/protocols/https/data.txt",
     "https://raw.githubusercontent.com/roosterkid/openproxylist/refs/heads/main/HTTPS_RAW.txt",
     "https://raw.githubusercontent.com/sunny9577/proxy-scraper/refs/heads/master/generated/http_proxies.txt",
     "https://raw.githubusercontent.com/TheSpeedX/PROXY-List/refs/heads/master/http.txt",
     "https://raw.githubusercontent.com/dpangestuw/Free-Proxy/refs/heads/main/http_proxies.txt",
+    "https://raw.githubusercontent.com/proxifly/free-proxy-list/refs/heads/main/proxies/protocols/http/data.txt",
     "https://raw.githubusercontent.com/ClearProxy/checked-proxy-list/refs/heads/main/http/raw/all.txt",
     "https://raw.githubusercontent.com/databay-labs/free-proxy-list/refs/heads/master/http.txt",
     "https://raw.githubusercontent.com/zloi-user/hideip.me/refs/heads/master/http.txt",
     "https://raw.githubusercontent.com/vmheaven/VMHeaven-Free-Proxy-Updated/refs/heads/main/http.txt",
+    "https://xcoder.fun/p.php?r=y",
+    "https://spys.me/proxy.txt",
+    "https://raw.githubusercontent.com/vakhov/fresh-proxy-list/master/proxylist.txt",
+    "https://raw.githubusercontent.com/proxifly/free-proxy-list/main/proxies/all/data.txt",
+    "https://cdn.jsdelivr.net/gh/proxifly/free-proxy-list@main/proxies/all/data.txt",
+    "https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/all.txt",
+    "https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/http.txt",
+    "https://github.com/zloi-user/hideip.me/raw/refs/heads/master/http.txt",
+    "https://github.com/zloi-user/hideip.me/raw/refs/heads/master/https.txt",
+    "https://github.com/zloi-user/hideip.me/raw/refs/heads/master/connect.txt",
+    "https://raw.githubusercontent.com/ymyuuu/IPDB/refs/heads/main/BestProxy/proxy.txt",
+    "https://raw.githubusercontent.com/roosterkid/openproxylist/main/HTTPS.txt",
+    "https://raw.githubusercontent.com/jetkai/proxy-list/refs/heads/main/online-proxies/txt/proxies.txt",
+    "https://raw.githubusercontent.com/Zaeem20/FREE_PROXIES_LIST/refs/heads/master/http.txt",
+    "https://raw.githubusercontent.com/Zaeem20/FREE_PROXIES_LIST/refs/heads/master/https.txt",
+    "https://raw.githubusercontent.com/officialputuid/KangProxy/refs/heads/KangProxy/xResults/RAW.txt",
+    "https://www.proxy-list.download/api/v2/get?l=en&t=http",
+    "https://www.proxy-list.download/api/v2/get?l=en&t=https",
+    "https://static.fatezero.org/tmp/proxy.txt",
+    "http://pubproxy.com/api/proxy?limit=5&level=elite&last_check=10&speed=1&https=true&format=txt",
+    "https://freeproxyupdate.com/files/txt/http.txt",
+    "https://freeproxyupdate.com/files/txt/https-ssl.txt",
+    "https://freeproxyupdate.com/files/txt/elite.txt",
+    "https://freeproxyupdate.com/files/txt/anonymous.txt",
+    "https://freeproxyupdate.com/files/txt/transparent.txt",
+    "https://ab57.ru/downloads/proxyold.txt",
+    "https://ab57.ru/downloads/proxylist.txt",
+    "https://api.openproxylist.xyz/http.txt",
+    "https://raw.githubusercontent.com/mmpx12/proxy-list/master/http.txt",
+    "https://raw.githubusercontent.com/ShiftyTR/Proxy-List/master/http.txt",
+    "https://raw.githubusercontent.com/proxy4parsing/proxy-list/main/http.txt",
+    "https://raw.githubusercontent.com/jetkai/proxy-list/main/online-proxies/txt/proxies-https.txt",
+    "https://raw.githubusercontent.com/jetkai/proxy-list/main/online-proxies/txt/proxies-http.txt",
+    "https://raw.githubusercontent.com/jetkai/proxy-list/main/archive/txt/proxies-https.txt",
+    "https://raw.githubusercontent.com/jetkai/proxy-list/main/archive/txt/proxies-http.txt",
+    "https://www.proxy-list.download/api/v1/get?type=http",
+    "https://www.proxy-list.download/api/v1/get?type=https",
+    "https://raw.githubusercontent.com/roosterkid/openproxylist/main/HTTPS_RAW.txt",
+    "https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/http.txt",
 ]
 
 HTTPS_SOURCES = [
@@ -218,10 +263,16 @@ HTTPS_SOURCES = [
     "https://raw.githubusercontent.com/r00tee/Proxy-List/refs/heads/main/Https.txt",
     "https://raw.githubusercontent.com/zloi-user/hideip.me/refs/heads/master/https.txt",
     "https://raw.githubusercontent.com/vmheaven/VMHeaven-Free-Proxy-Updated/refs/heads/main/https.txt",
+    "https://raw.githubusercontent.com/officialputuid/KangProxy/KangProxy/https/https.txt",
+    "https://cdn.jsdelivr.net/gh/proxifly/free-proxy-list@main/proxies/protocols/http/data.txt",
+    "https://github.com/zloi-user/hideip.me/raw/refs/heads/master/https.txt",
+    "https://raw.githubusercontent.com/Zaeem20/FREE_PROXIES_LIST/refs/heads/master/https.txt",
+    "https://freeproxyupdate.com/files/txt/https-ssl.txt",
 ]
 
 SOCKS4_SOURCES = [
     "https://api.proxyscrape.com/v3/free-proxy-list/get?request=getproxies&protocol=socks4",
+    "https://api.proxyscrape.com/v2/?request=getproxies&protocol=socks4&timeout=10000&country=all",
     "https://raw.githubusercontent.com/proxifly/free-proxy-list/refs/heads/main/proxies/protocols/socks4/data.txt",
     "https://raw.githubusercontent.com/roosterkid/openproxylist/refs/heads/main/SOCKS4_RAW.txt",
     "https://raw.githubusercontent.com/sunny9577/proxy-scraper/refs/heads/master/generated/socks4_proxies.txt",
@@ -231,10 +282,27 @@ SOCKS4_SOURCES = [
     "https://raw.githubusercontent.com/r00tee/Proxy-List/refs/heads/main/Socks4.txt",
     "https://raw.githubusercontent.com/zloi-user/hideip.me/refs/heads/master/socks4.txt",
     "https://raw.githubusercontent.com/vmheaven/VMHeaven-Free-Proxy-Updated/refs/heads/main/socks4.txt",
+    "https://raw.githubusercontent.com/roosterkid/openproxylist/main/SOCKS4_RAW.txt",
+    "https://raw.githubusercontent.com/officialputuid/KangProxy/KangProxy/socks4/socks4.txt",
+    "https://cdn.jsdelivr.net/gh/proxifly/free-proxy-list@main/proxies/protocols/socks4/data.txt",
+    "https://raw.githubusercontent.com/TheSpeedX/SOCKS-List/master/socks4.txt",
+    "https://github.com/zloi-user/hideip.me/raw/refs/heads/master/socks4.txt",
+    "https://raw.githubusercontent.com/roosterkid/openproxylist/main/SOCKS4.txt",
+    "https://raw.githubusercontent.com/Zaeem20/FREE_PROXIES_LIST/refs/heads/master/socks4.txt",
+    "https://www.proxy-list.download/api/v2/get?l=en&t=socks4",
+    "https://freeproxyupdate.com/files/txt/socks4.txt",
+    "https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/socks4.txt",
+    "https://api.openproxylist.xyz/socks4.txt",
+    "https://raw.githubusercontent.com/mmpx12/proxy-list/master/socks4.txt",
+    "https://raw.githubusercontent.com/ShiftyTR/Proxy-List/master/socks4.txt",
+    "https://raw.githubusercontent.com/rdavydov/proxy-list/main/proxies/socks4.txt",
+    "https://raw.githubusercontent.com/jetkai/proxy-list/main/online-proxies/txt/proxies-socks4.txt",
+    "https://www.proxy-list.download/api/v1/get?type=socks4",
 ]
 
 SOCKS5_SOURCES = [
     "https://api.proxyscrape.com/v3/free-proxy-list/get?request=getproxies&protocol=socks5",
+    "https://api.proxyscrape.com/v2/?request=getproxies&protocol=socks5&timeout=10000&country=all",
     "https://raw.githubusercontent.com/hookzof/socks5_list/refs/heads/master/proxy.txt",
     "https://raw.githubusercontent.com/proxifly/free-proxy-list/refs/heads/main/proxies/protocols/socks5/data.txt",
     "https://raw.githubusercontent.com/roosterkid/openproxylist/refs/heads/main/SOCKS5_RAW.txt",
@@ -246,6 +314,24 @@ SOCKS5_SOURCES = [
     "https://raw.githubusercontent.com/r00tee/Proxy-List/refs/heads/main/Socks5.txt",
     "https://raw.githubusercontent.com/zloi-user/hideip.me/refs/heads/master/socks5.txt",
     "https://raw.githubusercontent.com/vmheaven/VMHeaven-Free-Proxy-Updated/refs/heads/main/socks5.txt",
+    "https://raw.githubusercontent.com/roosterkid/openproxylist/main/SOCKS5_RAW.txt",
+    "https://cdn.jsdelivr.net/gh/proxifly/free-proxy-list@main/proxies/protocols/socks5/data.txt",
+    "https://raw.githubusercontent.com/hookzof/socks5_list/master/tg/socks.json",
+    "https://raw.githubusercontent.com/TheSpeedX/SOCKS-List/master/socks5.txt",
+    "https://api.proxyscrape.com/v3/free-proxy-list/get?request=displayproxies&proxytype=socks5",
+    "https://github.com/zloi-user/hideip.me/raw/refs/heads/master/socks5.txt",
+    "https://raw.githubusercontent.com/roosterkid/openproxylist/main/SOCKS5.txt",
+    "https://raw.githubusercontent.com/Zaeem20/FREE_PROXIES_LIST/refs/heads/master/socks5.txt",
+    "https://www.proxy-list.download/api/v2/get?l=en&t=socks5",
+    "https://spys.me/socks.txt",
+    "https://freeproxyupdate.com/files/txt/socks5.txt",
+    "https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/socks5.txt",
+    "https://api.openproxylist.xyz/socks5.txt",
+    "https://raw.githubusercontent.com/mmpx12/proxy-list/master/socks5.txt",
+    "https://raw.githubusercontent.com/ShiftyTR/Proxy-List/master/socks5.txt",
+    "https://raw.githubusercontent.com/jetkai/proxy-list/main/online-proxies/txt/proxies-socks5.txt",
+    "https://raw.githubusercontent.com/hookzof/socks5_list/master/proxy.txt",
+    "https://www.proxy-list.download/api/v1/get?type=socks5",
 ]
 
 
@@ -303,6 +389,37 @@ def normalize_protocol(p: Optional[str], expected: str) -> str:
 
 def extract_proxies_from_text(text: str, expected_protocol: str, source: str) -> List[Proxy]:
     found: List[Proxy] = []
+    
+    # Try parsing as JSON first
+    try:
+        data = json.loads(text)
+        if isinstance(data, list):
+            for item in data:
+                if isinstance(item, dict):
+                    ip = item.get("ip") or item.get("host") or item.get("address")
+                    port = item.get("port")
+                    proto = item.get("protocol") or item.get("type")
+                    if ip and port:
+                        try:
+                            proto = normalize_protocol(proto, expected_protocol)
+                            found.append(Proxy(proto, str(ip), int(port), None, None, source))
+                        except (ValueError, TypeError):
+                            continue
+                elif isinstance(item, str):
+                    # JSON array of strings like ["ip:port", ...]
+                    for m in PROXY_REGEX.finditer(item):
+                        proto = normalize_protocol(m.group("protocol"), expected_protocol)
+                        host = m.group("host")
+                        port = int(m.group("port"))
+                        username = m.group("username")
+                        password = m.group("password")
+                        found.append(Proxy(proto, host, port, username, password, source))
+        if found:
+            return found
+    except (json.JSONDecodeError, ValueError, TypeError):
+        pass
+    
+    # Standard regex parsing for text content
     for m in PROXY_REGEX.finditer(text):
         proto = normalize_protocol(m.group("protocol"), expected_protocol)
         host = m.group("host")
@@ -388,9 +505,16 @@ async def check_one_http(proxy: Proxy, session: aiohttp.ClientSession, check_url
     try:
         async with session.get(check_url, proxy=proxy_url, ssl=not DEFAULT_ALLOW_INSECURE_SSL, timeout=_make_timeout(DEFAULT_CHECK_TIMEOUT, DEFAULT_CHECK_CONNECT_TIMEOUT)) as resp:
             if resp.status == 200:
-                await resp.read()
+                body = await resp.text()
                 rtt = (time.perf_counter() - t0) * 1000.0
-                return Proxy(proxy.protocol, proxy.host, proxy.port, proxy.username, proxy.password, proxy.source, rtt)
+                # Parse JSON response and validate IP
+                try:
+                    data = json.loads(body)
+                    returned_ip = data.get("ip", "")
+                    if returned_ip == proxy.host:
+                        return Proxy(proxy.protocol, proxy.host, proxy.port, proxy.username, proxy.password, proxy.source, rtt)
+                except (json.JSONDecodeError, KeyError):
+                    return None
     except Exception:
         return None
     return None
@@ -405,9 +529,16 @@ async def check_one_socks(proxy: Proxy, check_url: str) -> Optional[Proxy]:
         async with aiohttp.ClientSession(connector=connector, headers=headers, timeout=_make_timeout(DEFAULT_CHECK_TIMEOUT, DEFAULT_CHECK_CONNECT_TIMEOUT)) as session:
             async with session.get(check_url, ssl=not DEFAULT_ALLOW_INSECURE_SSL) as resp:
                 if resp.status == 200:
-                    await resp.read()
+                    body = await resp.text()
                     rtt = (time.perf_counter() - t0) * 1000.0
-                    return Proxy(proxy.protocol, proxy.host, proxy.port, proxy.username, proxy.password, proxy.source, rtt)
+                    # Parse JSON response and validate IP
+                    try:
+                        data = json.loads(body)
+                        returned_ip = data.get("ip", "")
+                        if returned_ip == proxy.host:
+                            return Proxy(proxy.protocol, proxy.host, proxy.port, proxy.username, proxy.password, proxy.source, rtt)
+                    except (json.JSONDecodeError, KeyError):
+                        return None
     except Exception:
         return None
     return None
