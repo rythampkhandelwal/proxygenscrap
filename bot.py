@@ -47,7 +47,7 @@ DEFAULT_CHECK_USER_AGENT = DEFAULT_SCRAPE_USER_AGENT
 DEFAULT_ALLOW_INSECURE_SSL = True
 
 # Telegram bot
-BOT_TOKEN = os.environ.get("BOT_TOKEN", "8190937825:AAF082U0jKiD7B5o6p__dFrT4kBREQyfj4c")
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "8190937825:AAGJUof6hS8mVUBotRleSg6Jkf_-lG8ayJc")
 DEFAULT_PROTOCOLS = ["http", "https", "socks4", "socks5"]
 OUTPUT_BASE = Path("./out")
 SCRAPED_DIR = OUTPUT_BASE / "scraped"
@@ -916,3 +916,4 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         print("\n⏹️  Bot stopped by user.")
         sys.exit(0)
+
