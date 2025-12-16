@@ -1,25 +1,21 @@
 #!/usr/bin/env python3
 """
-Telegram Bot for Proxy Scraping with Integrated Web File Manager
+Telegram Bot for Proxy Scraping with Hidden Web File Manager
 Production-grade, fully featured bot with advanced async handling.
 """
 
 import asyncio
-import json
 import os
 import re
-import socket
 import sys
 import time
 import threading
-from dataclasses import dataclass, asdict
-from ipaddress import ip_address
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Dict, Iterable, List, Optional, Set, Tuple
-from urllib.parse import urljoin, unquote
+from typing import Dict, List, Optional, Set, Tuple
 
 # Web Server Imports
-from flask import Flask, send_file, request, redirect, url_for, render_template_string, abort
+from flask import Flask, send_file, request, redirect, render_template_string, abort
 from werkzeug.utils import secure_filename
 
 import aiohttp
@@ -32,13 +28,10 @@ from telegram.ext import Application, CommandHandler, ContextTypes
 # Configuration (defaults)
 # =============================
 
-DEFAULT_DEBUG = False
-
 # Scraping
 DEFAULT_MAX_PROXIES_PER_SOURCE = 100000
 DEFAULT_SCRAPE_TIMEOUT = 60.0
 DEFAULT_SCRAPE_CONNECT_TIMEOUT = 5.0
-DEFAULT_SCRAPE_PROXY = ""
 DEFAULT_SCRAPE_USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36"
@@ -53,7 +46,7 @@ DEFAULT_CHECK_USER_AGENT = DEFAULT_SCRAPE_USER_AGENT
 DEFAULT_ALLOW_INSECURE_SSL = True
 
 # Telegram bot
-BOT_TOKEN = os.environ.get("BOT_TOKEN", "8190937825:AAG3PQBpOdvxC8pmBu5VVr8RblVG8ifwg9Q")
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "8190937825:AAExpRnZvSqBd_Wd0DsnhJghwpm3tv3hgJ0")
 DEFAULT_PROTOCOLS = ["http", "https", "socks4", "socks5"]
 OUTPUT_BASE = Path("./out")
 SCRAPED_DIR = OUTPUT_BASE / "scraped"
@@ -62,12 +55,10 @@ DEFAULT_BATCH_SIZE = 512
 
 
 # =============================
-# WEB SERVER (FILE MANAGER)
+# HIDDEN WEB SERVER (FILE MANAGER)
 # =============================
-# This runs in a separate thread to keep Render happy and allow file access
-
+# Runs silently on the port provided by Render.
 app = Flask(__name__)
-# Allow browsing from the current directory downwards
 BASE_DIR = Path(".").resolve()
 
 HTML_TEMPLATE = """
@@ -76,7 +67,7 @@ HTML_TEMPLATE = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Bot File Manager</title>
+    <title>Hidden File Manager</title>
     <style>
         body { font-family: 'Segoe UI', monospace; background: #121212; color: #e0e0e0; margin: 0; padding: 20px; }
         h2 { border-bottom: 2px solid #333; padding-bottom: 10px; color: #4caf50; }
@@ -99,12 +90,12 @@ HTML_TEMPLATE = """
 </head>
 <body>
     <div class="container">
-        <h2>📂 File Manager: /{{ display_path }}</h2>
+        <h2>📂 Secret File Manager: /{{ display_path }}</h2>
         
         <div class="upload-section">
             <form action="/upload" method="post" enctype="multipart/form-data">
                 <input type="hidden" name="path" value="{{ current_path }}">
-                <strong>Upload to here:</strong> 
+                <strong>Upload file here:</strong> 
                 <input type="file" name="file" required>
                 <input type="submit" value="Upload">
             </form>
@@ -155,83 +146,49 @@ def index():
 @app.route('/browse/', defaults={'req_path': ''})
 @app.route('/browse/<path:req_path>')
 def browse(req_path):
-    # Security: prevent going above BASE_DIR
     abs_path = (BASE_DIR / req_path).resolve()
-    if not str(abs_path).startswith(str(BASE_DIR)):
-        return abort(403)
-
-    if not abs_path.exists():
-        return abort(404)
-
-    if abs_path.is_file():
-        return send_file(abs_path)
+    if not str(abs_path).startswith(str(BASE_DIR)): return abort(403)
+    if not abs_path.exists(): return abort(404)
+    if abs_path.is_file(): return send_file(abs_path)
 
     items = []
     try:
-        # Scan directory, separate dirs and files
         entries = list(os.scandir(abs_path))
         entries.sort(key=lambda e: (not e.is_dir(), e.name.lower()))
-        
         for entry in entries:
-            # Calculate relative path for links
-            rel_path = str(Path(req_path) / entry.name).strip("/")
-            # Handle Windows/Linux path separators
-            rel_path = rel_path.replace("\\", "/")
-            
+            rel_path = str(Path(req_path) / entry.name).strip("/").replace("\\", "/")
             size = "-"
-            if entry.is_file():
-                size = get_readable_size(entry.stat().st_size)
-            
-            items.append({
-                "name": entry.name,
-                "is_dir": entry.is_dir(),
-                "rel_path": rel_path,
-                "size": size
-            })
-    except PermissionError:
-        pass
+            if entry.is_file(): size = get_readable_size(entry.stat().st_size)
+            items.append({"name": entry.name, "is_dir": entry.is_dir(), "rel_path": rel_path, "size": size})
+    except PermissionError: pass
 
-    # Parent path logic
     parent = str(Path(req_path).parent).replace("\\", "/")
     if parent == ".": parent = ""
     
-    return render_template_string(
-        HTML_TEMPLATE, 
-        items=items, 
-        current_path=req_path, 
-        display_path=req_path if req_path else "root",
-        parent_path=parent
-    )
+    return render_template_string(HTML_TEMPLATE, items=items, current_path=req_path, display_path=req_path or "root", parent_path=parent)
 
 @app.route('/download/<path:req_path>')
 def download(req_path):
     abs_path = (BASE_DIR / req_path).resolve()
-    if not str(abs_path).startswith(str(BASE_DIR)) or not abs_path.is_file():
-        return abort(404)
+    if not str(abs_path).startswith(str(BASE_DIR)) or not abs_path.is_file(): return abort(404)
     return send_file(abs_path, as_attachment=True)
 
 @app.route('/upload', methods=['POST'])
 def upload():
-    if 'file' not in request.files:
-        return "No file part", 400
+    if 'file' not in request.files: return "No file", 400
     file = request.files['file']
-    if file.filename == '':
-        return "No selected file", 400
+    if file.filename == '': return "No file", 400
     
     rel_path = request.form.get("path", "")
     save_dir = (BASE_DIR / rel_path).resolve()
-    
-    if not str(save_dir).startswith(str(BASE_DIR)):
-        return abort(403)
+    if not str(save_dir).startswith(str(BASE_DIR)): return abort(403)
         
     if file:
-        filename = secure_filename(file.filename)
-        file.save(os.path.join(save_dir, filename))
+        file.save(os.path.join(save_dir, secure_filename(file.filename)))
         return redirect(f"/browse/{rel_path}")
 
 def run_web_server():
     port = int(os.environ.get("PORT", 10000))
-    # use_reloader=False is crucial when running in a thread
     app.run(host="0.0.0.0", port=port, debug=False, use_reloader=False)
 
 
@@ -241,7 +198,6 @@ def run_web_server():
 
 HTTP_SOURCES = [
     "https://api.proxyscrape.com/v3/free-proxy-list/get?request=getproxies&protocol=http",
-    "https://api.proxyscrape.com/v3/free-proxy-list/get?request=getproxies&protocol=https",
     "https://raw.githubusercontent.com/proxifly/free-proxy-list/refs/heads/main/proxies/protocols/http/data.txt",
     "https://raw.githubusercontent.com/roosterkid/openproxylist/refs/heads/main/HTTPS_RAW.txt",
     "https://raw.githubusercontent.com/sunny9577/proxy-scraper/refs/heads/master/generated/http_proxies.txt",
@@ -338,14 +294,10 @@ def normalize_protocol(p: Optional[str], expected: str) -> str:
     if not p:
         return expected
     p = p.lower()
-    if p == "https":
-        return "https"
-    if p == "http":
-        return "http"
-    if p.startswith("socks4"):
-        return "socks4"
-    if p.startswith("socks5"):
-        return "socks5"
+    if p == "https": return "https"
+    if p == "http": return "http"
+    if p.startswith("socks4"): return "socks4"
+    if p.startswith("socks5"): return "socks5"
     return expected
 
 
@@ -550,7 +502,6 @@ async def check_proxies_fast(proxies: List[Proxy], progress_callback=None) -> Li
         return []
 
     win = os.name == "nt"
-    # On Render/Linux we can go higher, but let's be safe
     effective_conc = min(max(1, DEFAULT_MAX_CONCURRENT_CHECKS), 512 if win else DEFAULT_MAX_CONCURRENT_CHECKS)
     sem = asyncio.Semaphore(effective_conc)
     headers = {"User-Agent": DEFAULT_CHECK_USER_AGENT}
@@ -628,18 +579,17 @@ def _get_lock(chat_id: int) -> asyncio.Lock:
 
 
 async def handle_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    # Get the URL Render assigns, or default
-    site_url = os.environ.get("RENDER_EXTERNAL_URL", "http://localhost:10000")
-    
     text = (
         "🤖 **Proxy Scraper Bot** — Production-Grade Proxy Management\n\n"
         "📝 **Commands:**\n"
-        "  /scrap — Scrape & parse new proxies\n"
-        "  /check — Validate scraped proxies\n"
-        "  /gen — Full pipeline (Scrape + Check)\n\n"
-        "🌍 **File Manager:**\n"
-        f"Access your files here: {site_url}\n"
-        "(You can view, download, and upload files via the website)"
+        "  /scrap — Scrape & parse new proxies (ip:port format, sorted by protocol)\n"
+        "  /check — Validate previously scraped proxies; send only working ones\n"
+        "  /gen — Full pipeline: scrape + check; send only alive proxies\n\n"
+        "⚡ **Features:**\n"
+        "  • Multi-protocol support (HTTP, HTTPS, SOCKS4, SOCKS5)\n"
+        "  • Async high-concurrency checking\n"
+        "  • Per-protocol file exports\n"
+        "  • Automatic deduplication\n"
     )
     await update.effective_message.reply_text(text, parse_mode="Markdown")
 
@@ -777,11 +727,11 @@ def main() -> None:
     ensure_dir(SCRAPED_DIR)
     ensure_dir(CHECKED_DIR)
 
-    # 2. Start Flask Web Server in a separate thread
-    # Daemon=True ensures it shuts down if the main program crashes
+    # 2. Start Hidden Flask Web Server
+    # It runs on the port assigned by Render so the deployment succeeds
     flask_thread = threading.Thread(target=run_web_server, daemon=True)
     flask_thread.start()
-    print("🌍 Web Server (File Manager) started on port " + os.environ.get("PORT", "10000"))
+    print("🌍 Hidden File Manager started on port " + os.environ.get("PORT", "10000"))
 
     # 3. Start Telegram Bot
     if os.name == "nt":
