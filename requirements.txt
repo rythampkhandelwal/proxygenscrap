@@ -2,3 +2,4 @@ aiohttp==3.10.10
 aiohttp-socks==0.8.4
 python-telegram-bot==21.8
 flask
+werkzeug
