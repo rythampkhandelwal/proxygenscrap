@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Telegram Bot for Proxy Scraping, Validation, and Distribution
+Telegram Bot for Proxy Scraping with Hidden Web File Manager
 Production-grade, fully featured bot with advanced async handling.
 """
 
@@ -8,14 +8,16 @@ import asyncio
 import json
 import os
 import re
-import socket
 import sys
 import time
-from dataclasses import dataclass, asdict
-from ipaddress import ip_address
+import threading
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Dict, Iterable, List, Optional, Set, Tuple
-from urllib.parse import urljoin
+from typing import Dict, List, Optional, Set, Tuple
+
+# Web Server Imports
+from flask import Flask, send_file, request, redirect, render_template_string, abort
+from werkzeug.utils import secure_filename
 
 import aiohttp
 from aiohttp_socks import ProxyConnector
@@ -27,13 +29,10 @@ from telegram.ext import Application, CommandHandler, ContextTypes
 # Configuration (defaults)
 # =============================
 
-DEFAULT_DEBUG = False
-
 # Scraping
 DEFAULT_MAX_PROXIES_PER_SOURCE = 100000
 DEFAULT_SCRAPE_TIMEOUT = 120.0
 DEFAULT_SCRAPE_CONNECT_TIMEOUT = 10.0
-DEFAULT_SCRAPE_PROXY = ""
 DEFAULT_SCRAPE_USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36"
@@ -48,7 +47,7 @@ DEFAULT_CHECK_USER_AGENT = DEFAULT_SCRAPE_USER_AGENT
 DEFAULT_ALLOW_INSECURE_SSL = True
 
 # Telegram bot
-BOT_TOKEN = "8190937825:AAG3PQBpOdvxC8pmBu5VVr8RblVG8ifwg9Q"
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "8190937825:AAGJUof6hS8mVUBotRleSg6Jkf_-lG8ayJc")
 DEFAULT_PROTOCOLS = ["http", "https", "socks4", "socks5"]
 OUTPUT_BASE = Path("./out")
 SCRAPED_DIR = OUTPUT_BASE / "scraped"
@@ -57,22 +56,160 @@ DEFAULT_BATCH_SIZE = 512
 
 
 # =============================
-# Sources (merged from prompt + repo)
+# HIDDEN WEB SERVER (FILE MANAGER)
+# =============================
+# Runs silently on the port provided by Render.
+app = Flask(__name__)
+BASE_DIR = Path(".").resolve()
+
+HTML_TEMPLATE = """
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Hidden File Manager</title>
+    <style>
+        body { font-family: 'Segoe UI', monospace; background: #121212; color: #e0e0e0; margin: 0; padding: 20px; }
+        h2 { border-bottom: 2px solid #333; padding-bottom: 10px; color: #4caf50; }
+        a { color: #64b5f6; text-decoration: none; }
+        a:hover { text-decoration: underline; }
+        .container { max-width: 1000px; margin: auto; }
+        .upload-section { background: #1e1e1e; padding: 15px; border-radius: 8px; margin-bottom: 20px; border: 1px solid #333; }
+        table { width: 100%; border-collapse: collapse; margin-top: 20px; background: #1e1e1e; border-radius: 8px; overflow: hidden; }
+        th, td { text-align: left; padding: 12px; border-bottom: 1px solid #333; }
+        th { background: #252526; color: #aaa; }
+        tr:hover { background: #2d2d2d; }
+        .icon { margin-right: 8px; }
+        .dir { color: #ffb74d; font-weight: bold; }
+        .file { color: #81c784; }
+        .size { color: #888; font-size: 0.9em; }
+        input[type="submit"] { background: #4caf50; color: white; border: none; padding: 8px 15px; cursor: pointer; border-radius: 4px; }
+        input[type="submit"]:hover { background: #43a047; }
+        input[type="file"] { color: #ccc; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h2>📂 Secret File Manager: /{{ display_path }}</h2>
+        
+        <div class="upload-section">
+            <form action="/upload" method="post" enctype="multipart/form-data">
+                <input type="hidden" name="path" value="{{ current_path }}">
+                <strong>Upload file here:</strong> 
+                <input type="file" name="file" required>
+                <input type="submit" value="Upload">
+            </form>
+        </div>
+
+        <div>
+            <a href="/browse/{{ parent_path }}">⬅️ Up Level</a>
+        </div>
+
+        <table>
+            <thead><tr><th>Name</th><th>Size</th><th>Actions</th></tr></thead>
+            <tbody>
+            {% for item in items %}
+            <tr>
+                <td>
+                    {% if item.is_dir %}
+                        <span class="icon">📁</span><a class="dir" href="/browse/{{ item.rel_path }}">{{ item.name }}</a>
+                    {% else %}
+                        <span class="icon">📄</span><span class="file">{{ item.name }}</span>
+                    {% endif %}
+                </td>
+                <td class="size">{{ item.size }}</td>
+                <td>
+                    {% if not item.is_dir %}
+                        <a href="/download/{{ item.rel_path }}">⬇️ Download</a>
+                    {% endif %}
+                </td>
+            </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</body>
+</html>
+"""
+
+def get_readable_size(size_in_bytes):
+    for unit in ['B', 'KB', 'MB', 'GB']:
+        if size_in_bytes < 1024.0:
+            return f"{size_in_bytes:.2f} {unit}"
+        size_in_bytes /= 1024.0
+    return f"{size_in_bytes:.2f} TB"
+
+@app.route('/')
+def index():
+    return redirect('/browse/')
+
+@app.route('/browse/', defaults={'req_path': ''})
+@app.route('/browse/<path:req_path>')
+def browse(req_path):
+    abs_path = (BASE_DIR / req_path).resolve()
+    if not str(abs_path).startswith(str(BASE_DIR)): return abort(403)
+    if not abs_path.exists(): return abort(404)
+    if abs_path.is_file(): return send_file(abs_path)
+
+    items = []
+    try:
+        entries = list(os.scandir(abs_path))
+        entries.sort(key=lambda e: (not e.is_dir(), e.name.lower()))
+        for entry in entries:
+            rel_path = str(Path(req_path) / entry.name).strip("/").replace("\\", "/")
+            size = "-"
+            if entry.is_file(): size = get_readable_size(entry.stat().st_size)
+            items.append({"name": entry.name, "is_dir": entry.is_dir(), "rel_path": rel_path, "size": size})
+    except PermissionError: pass
+
+    parent = str(Path(req_path).parent).replace("\\", "/")
+    if parent == ".": parent = ""
+    
+    return render_template_string(HTML_TEMPLATE, items=items, current_path=req_path, display_path=req_path or "root", parent_path=parent)
+
+@app.route('/download/<path:req_path>')
+def download(req_path):
+    abs_path = (BASE_DIR / req_path).resolve()
+    if not str(abs_path).startswith(str(BASE_DIR)) or not abs_path.is_file(): return abort(404)
+    return send_file(abs_path, as_attachment=True)
+
+@app.route('/upload', methods=['POST'])
+def upload():
+    if 'file' not in request.files: return "No file", 400
+    file = request.files['file']
+    if file.filename == '': return "No file", 400
+    
+    rel_path = request.form.get("path", "")
+    save_dir = (BASE_DIR / rel_path).resolve()
+    if not str(save_dir).startswith(str(BASE_DIR)): return abort(403)
+        
+    if file:
+        file.save(os.path.join(save_dir, secure_filename(file.filename)))
+        return redirect(f"/browse/{rel_path}")
+
+def run_web_server():
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port, debug=False, use_reloader=False)
+
+
+# =============================
+# Sources
 # =============================
 
 HTTP_SOURCES = [
     "https://api.proxyscrape.com/v3/free-proxy-list/get?request=getproxies&protocol=http",
+    "https://api.proxyscrape.com/v3/free-proxy-list/get?request=getproxies&protocol=https",
     "https://api.proxyscrape.com/v2/?request=getproxies&protocol=http&timeout=10000&country=all",
     "https://api.proxyscrape.com/v2/?request=getproxies&protocol=http&timeout=10000&country=all&ssl=all&anonymity=all",
-    "https://api.proxyscrape.com/v3/free-proxy-list/get?request=getproxies&protocol=https",
     "https://api.proxyscrape.com/v4/free-proxy-list/get?request=displayproxies&timeout=8000&country=all&ssl=all&anonymity=all",
     "https://raw.githubusercontent.com/proxifly/free-proxy-list/refs/heads/main/proxies/protocols/http/data.txt",
+    "https://raw.githubusercontent.com/proxifly/free-proxy-list/refs/heads/main/proxies/protocols/https/data.txt",
     "https://raw.githubusercontent.com/roosterkid/openproxylist/refs/heads/main/HTTPS_RAW.txt",
-    "https://raw.githubusercontent.com/roosterkid/openproxylist/main/HTTPS_RAW.txt",
     "https://raw.githubusercontent.com/sunny9577/proxy-scraper/refs/heads/master/generated/http_proxies.txt",
     "https://raw.githubusercontent.com/TheSpeedX/PROXY-List/refs/heads/master/http.txt",
-    "https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/http.txt",
     "https://raw.githubusercontent.com/dpangestuw/Free-Proxy/refs/heads/main/http_proxies.txt",
+    "https://raw.githubusercontent.com/proxifly/free-proxy-list/refs/heads/main/proxies/protocols/http/data.txt",
     "https://raw.githubusercontent.com/ClearProxy/checked-proxy-list/refs/heads/main/http/raw/all.txt",
     "https://raw.githubusercontent.com/databay-labs/free-proxy-list/refs/heads/master/http.txt",
     "https://raw.githubusercontent.com/zloi-user/hideip.me/refs/heads/master/http.txt",
@@ -90,17 +227,11 @@ HTTP_SOURCES = [
     "https://raw.githubusercontent.com/ymyuuu/IPDB/refs/heads/main/BestProxy/proxy.txt",
     "https://raw.githubusercontent.com/roosterkid/openproxylist/main/HTTPS.txt",
     "https://raw.githubusercontent.com/jetkai/proxy-list/refs/heads/main/online-proxies/txt/proxies.txt",
-    "https://raw.githubusercontent.com/jetkai/proxy-list/main/online-proxies/txt/proxies-https.txt",
-    "https://raw.githubusercontent.com/jetkai/proxy-list/main/online-proxies/txt/proxies-http.txt",
-    "https://raw.githubusercontent.com/jetkai/proxy-list/main/archive/txt/proxies-https.txt",
-    "https://raw.githubusercontent.com/jetkai/proxy-list/main/archive/txt/proxies-http.txt",
     "https://raw.githubusercontent.com/Zaeem20/FREE_PROXIES_LIST/refs/heads/master/http.txt",
     "https://raw.githubusercontent.com/Zaeem20/FREE_PROXIES_LIST/refs/heads/master/https.txt",
     "https://raw.githubusercontent.com/officialputuid/KangProxy/refs/heads/KangProxy/xResults/RAW.txt",
     "https://www.proxy-list.download/api/v2/get?l=en&t=http",
     "https://www.proxy-list.download/api/v2/get?l=en&t=https",
-    "https://www.proxy-list.download/api/v1/get?type=http",
-    "https://www.proxy-list.download/api/v1/get?type=https",
     "https://static.fatezero.org/tmp/proxy.txt",
     "http://pubproxy.com/api/proxy?limit=5&level=elite&last_check=10&speed=1&https=true&format=txt",
     "https://freeproxyupdate.com/files/txt/http.txt",
@@ -108,10 +239,20 @@ HTTP_SOURCES = [
     "https://freeproxyupdate.com/files/txt/elite.txt",
     "https://freeproxyupdate.com/files/txt/anonymous.txt",
     "https://freeproxyupdate.com/files/txt/transparent.txt",
+    "https://ab57.ru/downloads/proxyold.txt",
+    "https://ab57.ru/downloads/proxylist.txt",
     "https://api.openproxylist.xyz/http.txt",
     "https://raw.githubusercontent.com/mmpx12/proxy-list/master/http.txt",
     "https://raw.githubusercontent.com/ShiftyTR/Proxy-List/master/http.txt",
     "https://raw.githubusercontent.com/proxy4parsing/proxy-list/main/http.txt",
+    "https://raw.githubusercontent.com/jetkai/proxy-list/main/online-proxies/txt/proxies-https.txt",
+    "https://raw.githubusercontent.com/jetkai/proxy-list/main/online-proxies/txt/proxies-http.txt",
+    "https://raw.githubusercontent.com/jetkai/proxy-list/main/archive/txt/proxies-https.txt",
+    "https://raw.githubusercontent.com/jetkai/proxy-list/main/archive/txt/proxies-http.txt",
+    "https://www.proxy-list.download/api/v1/get?type=http",
+    "https://www.proxy-list.download/api/v1/get?type=https",
+    "https://raw.githubusercontent.com/roosterkid/openproxylist/main/HTTPS_RAW.txt",
+    "https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/http.txt",
     # From JavaScript proxy scraper
     "https://openproxy.space/list/http",
     "https://proxyspace.pro/http.txt",
@@ -122,7 +263,9 @@ HTTP_SOURCES = [
     "https://cdn.jsdelivr.net/gh/aslisk/proxyhttps/https.txt",
     "https://cdn.jsdelivr.net/gh/clarketm/proxy-list/proxy-list-raw.txt",
     "https://cdn.jsdelivr.net/gh/hendrikbgr/Free-Proxy-Repo/proxy_list.txt",
+    "https://cdn.jsdelivr.net/gh/jetkai/proxy-list/online-proxies/txt/proxies-http.txt",
     "https://cdn.jsdelivr.net/gh/mmpx12/proxy-list/https.txt",
+    "https://cdn.jsdelivr.net/gh/roosterkid/openproxylist/HTTPS_RAW.txt",
     "https://cdn.jsdelivr.net/gh/ShiftyTR/Proxy-List/https.txt",
     "https://cdn.jsdelivr.net/gh/sunny9577/proxy-scraper/proxies.txt",
 ]
@@ -148,10 +291,8 @@ SOCKS4_SOURCES = [
     "https://api.proxyscrape.com/v2/?request=getproxies&protocol=socks4&timeout=10000&country=all",
     "https://raw.githubusercontent.com/proxifly/free-proxy-list/refs/heads/main/proxies/protocols/socks4/data.txt",
     "https://raw.githubusercontent.com/roosterkid/openproxylist/refs/heads/main/SOCKS4_RAW.txt",
-    "https://raw.githubusercontent.com/roosterkid/openproxylist/main/SOCKS4_RAW.txt",
     "https://raw.githubusercontent.com/sunny9577/proxy-scraper/refs/heads/master/generated/socks4_proxies.txt",
     "https://raw.githubusercontent.com/TheSpeedX/PROXY-List/refs/heads/master/socks4.txt",
-    "https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/socks4.txt",
     "https://raw.githubusercontent.com/dpangestuw/Free-Proxy/refs/heads/main/socks4_proxies.txt",
     "https://raw.githubusercontent.com/ClearProxy/checked-proxy-list/refs/heads/main/socks4/raw/all.txt",
     "https://raw.githubusercontent.com/r00tee/Proxy-List/refs/heads/main/Socks4.txt",
@@ -165,12 +306,14 @@ SOCKS4_SOURCES = [
     "https://raw.githubusercontent.com/roosterkid/openproxylist/main/SOCKS4.txt",
     "https://raw.githubusercontent.com/Zaeem20/FREE_PROXIES_LIST/refs/heads/master/socks4.txt",
     "https://www.proxy-list.download/api/v2/get?l=en&t=socks4",
-    "https://www.proxy-list.download/api/v1/get?type=socks4",
     "https://freeproxyupdate.com/files/txt/socks4.txt",
     "https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/socks4.txt",
     "https://api.openproxylist.xyz/socks4.txt",
+    "https://raw.githubusercontent.com/mmpx12/proxy-list/master/socks4.txt",
+    "https://raw.githubusercontent.com/ShiftyTR/Proxy-List/master/socks4.txt",
     "https://raw.githubusercontent.com/rdavydov/proxy-list/main/proxies/socks4.txt",
     "https://raw.githubusercontent.com/jetkai/proxy-list/main/online-proxies/txt/proxies-socks4.txt",
+    "https://www.proxy-list.download/api/v1/get?type=socks4",
     # From JavaScript proxy scraper
     "https://openproxy.space/list/socks4",
     "https://proxyspace.pro/socks4.txt",
@@ -178,6 +321,7 @@ SOCKS4_SOURCES = [
     "https://proxylist.geonode.com/api/proxy-list?limit=500&page=1&sort_by=lastChecked&sort_type=desc&protocols=socks4",
     "https://www.my-proxy.com/free-socks-4-proxy.html",
     "https://cdn.jsdelivr.net/gh/B4RC0DE-TM/proxy-list/SOCKS4.txt",
+    "https://cdn.jsdelivr.net/gh/jetkai/proxy-list/online-proxies/txt/proxies-socks4.txt",
     "https://cdn.jsdelivr.net/gh/roosterkid/openproxylist/SOCKS4_RAW.txt",
     "https://cdn.jsdelivr.net/gh/TheSpeedX/PROXY-List/socks4.txt",
 ]
@@ -186,13 +330,10 @@ SOCKS5_SOURCES = [
     "https://api.proxyscrape.com/v3/free-proxy-list/get?request=getproxies&protocol=socks5",
     "https://api.proxyscrape.com/v2/?request=getproxies&protocol=socks5&timeout=10000&country=all",
     "https://raw.githubusercontent.com/hookzof/socks5_list/refs/heads/master/proxy.txt",
-    "https://raw.githubusercontent.com/hookzof/socks5_list/master/proxy.txt",
     "https://raw.githubusercontent.com/proxifly/free-proxy-list/refs/heads/main/proxies/protocols/socks5/data.txt",
     "https://raw.githubusercontent.com/roosterkid/openproxylist/refs/heads/main/SOCKS5_RAW.txt",
-    "https://raw.githubusercontent.com/roosterkid/openproxylist/main/SOCKS5_RAW.txt",
     "https://raw.githubusercontent.com/sunny9577/proxy-scraper/refs/heads/master/generated/socks5_proxies.txt",
     "https://raw.githubusercontent.com/TheSpeedX/PROXY-List/refs/heads/master/socks5.txt",
-    "https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/socks5.txt",
     "https://raw.githubusercontent.com/dpangestuw/Free-Proxy/refs/heads/main/socks5_proxies.txt",
     "https://raw.githubusercontent.com/ClearProxy/checked-proxy-list/refs/heads/main/socks5/raw/all.txt",
     "https://raw.githubusercontent.com/databay-labs/free-proxy-list/refs/heads/master/socks5.txt",
@@ -208,18 +349,22 @@ SOCKS5_SOURCES = [
     "https://raw.githubusercontent.com/roosterkid/openproxylist/main/SOCKS5.txt",
     "https://raw.githubusercontent.com/Zaeem20/FREE_PROXIES_LIST/refs/heads/master/socks5.txt",
     "https://www.proxy-list.download/api/v2/get?l=en&t=socks5",
-    "https://www.proxy-list.download/api/v1/get?type=socks5",
     "https://spys.me/socks.txt",
     "https://freeproxyupdate.com/files/txt/socks5.txt",
     "https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/socks5.txt",
     "https://api.openproxylist.xyz/socks5.txt",
+    "https://raw.githubusercontent.com/mmpx12/proxy-list/master/socks5.txt",
+    "https://raw.githubusercontent.com/ShiftyTR/Proxy-List/master/socks5.txt",
     "https://raw.githubusercontent.com/jetkai/proxy-list/main/online-proxies/txt/proxies-socks5.txt",
+    "https://raw.githubusercontent.com/hookzof/socks5_list/master/proxy.txt",
+    "https://www.proxy-list.download/api/v1/get?type=socks5",
     # From JavaScript proxy scraper
     "https://openproxy.space/list/socks5",
     "https://proxyspace.pro/socks5.txt",
     "https://proxy-tools.com/proxy/socks5",
     "https://proxyhub.me/en/all-sock5-proxy-list.html",
     "https://proxylist.geonode.com/api/proxy-list?limit=500&page=1&sort_by=lastChecked&sort_type=desc&protocols=socks5",
+    "https://cdn.jsdelivr.net/gh/jetkai/proxy-list/online-proxies/txt/proxies-socks5.txt",
     "https://cdn.jsdelivr.net/gh/mmpx12/proxy-list/socks5.txt",
     "https://cdn.jsdelivr.net/gh/roosterkid/openproxylist/SOCKS5_RAW.txt",
     "https://cdn.jsdelivr.net/gh/TheSpeedX/PROXY-List/socks5.txt",
@@ -227,7 +372,7 @@ SOCKS5_SOURCES = [
 
 
 # =============================
-# Regex parsing (ported from Rust)
+# Regex parsing
 # =============================
 
 PROXY_REGEX = re.compile(
@@ -271,14 +416,10 @@ def normalize_protocol(p: Optional[str], expected: str) -> str:
     if not p:
         return expected
     p = p.lower()
-    if p == "https":
-        return "https"
-    if p == "http":
-        return "http"
-    if p.startswith("socks4"):
-        return "socks4"
-    if p.startswith("socks5"):
-        return "socks5"
+    if p == "https": return "https"
+    if p == "http": return "http"
+    if p.startswith("socks4"): return "socks4"
+    if p.startswith("socks5"): return "socks5"
     return expected
 
 
@@ -628,7 +769,6 @@ async def handle_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "  • Async high-concurrency checking\n"
         "  • Per-protocol file exports\n"
         "  • Automatic deduplication\n"
-        "  • Windows-safe socket handling\n"
     )
     await update.effective_message.reply_text(text, parse_mode="Markdown")
 
@@ -666,7 +806,9 @@ async def handle_scrap(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             await send_documents(context.bot, chat_id, files, f"📋 **Scraped Proxies** ({len(proxies):,} total)\nFormat: ip:port")
             await status.edit_text("✅ Done! Use /check to validate these proxies.")
         except Exception as e:
-            await status.edit_text(f"❌ Scrape failed: {str(e)[:100]}")
+            import traceback
+            traceback.print_exc()
+            await status.edit_text(f"❌ Scrape failed: {str(e)[:200]}")
 
 
 async def handle_check(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -707,7 +849,9 @@ async def handle_check(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             await send_documents(context.bot, chat_id, files, f"✅ **Validated Proxies** ({len(checked):,} alive)\nSorted by speed")
             await status.edit_text("✅ Done! Run /scrap anytime to refresh sources.")
         except Exception as e:
-            await status.edit_text(f"❌ Check failed: {str(e)[:100]}")
+            import traceback
+            traceback.print_exc()
+            await status.edit_text(f"❌ Check failed: {str(e)[:200]}")
 
 
 async def handle_gen(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -725,7 +869,10 @@ async def handle_gen(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
             now = time.time()
             if now - last_update >= 2:
                 pct = int(100 * completed / total) if total > 0 else 0
-                await status.edit_text(f"🚀 Phase 1: Scraping sources\n[{pct}%] {completed}/{total} sources\nFound: **{found:,}** proxies")
+                try:
+                    await status.edit_text(f"🚀 Phase 1: Scraping sources\n[{pct}%] {completed}/{total} sources\nFound: **{found:,}** proxies")
+                except Exception:
+                    pass
                 last_update = now
         
         async def on_gen_check_progress(completed: int, total: int, alive: int) -> None:
@@ -733,7 +880,10 @@ async def handle_gen(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
             now = time.time()
             if now - last_update >= 1:
                 pct = int(100 * completed / total) if total > 0 else 0
-                await status.edit_text(f"🚀 Phase 2: Validating proxies\n[{pct}%] {completed}/{total} checked\n✅ Alive: **{alive}**")
+                try:
+                    await status.edit_text(f"🚀 Phase 2: Validating proxies\n[{pct}%] {completed}/{total} checked\n✅ Alive: **{alive}**")
+                except Exception:
+                    pass
                 last_update = now
         
         try:
@@ -755,7 +905,9 @@ async def handle_gen(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
             await send_documents(context.bot, chat_id, files, f"🚀 **Fresh Proxies** ({len(checked):,} alive)\nDirect from sources, fully validated")
             await status.edit_text("✅ Complete! All proxies are production-ready.")
         except Exception as e:
-            await status.edit_text(f"❌ Generation failed: {str(e)[:100]}")
+            import traceback
+            traceback.print_exc()
+            await status.edit_text(f"❌ Generation failed: {str(e)[:200]}")
 
 
 def build_application() -> Application:
@@ -768,11 +920,20 @@ def build_application() -> Application:
 
 
 def main() -> None:
-    # Silence Windows Proactor noise
+    # 1. Initialize Directories
+    ensure_dir(SCRAPED_DIR)
+    ensure_dir(CHECKED_DIR)
+
+    # 2. Start Hidden Flask Web Server
+    # It runs on the port assigned by Render so the deployment succeeds
+    flask_thread = threading.Thread(target=run_web_server, daemon=True)
+    flask_thread.start()
+    print("🌍 Hidden File Manager started on port " + os.environ.get("PORT", "10000"))
+
+    # 3. Start Telegram Bot
     if os.name == "nt":
         asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
-    clear_output_dirs()
     app = build_application()
     print("🤖 Proxy Scraper Bot starting... (Press Ctrl+C to stop)")
     app.run_polling()
